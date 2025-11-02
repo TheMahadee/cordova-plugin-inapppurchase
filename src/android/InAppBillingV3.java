@@ -180,8 +180,6 @@ public class InAppBillingV3 extends CordovaPlugin {
     billing.queryProducts(ids, BillingClient.ProductType.INAPP);
 
     // We’ll receive results via the same listener — wire a one-shot converter
-    // Simplest way: temporarily install a small forwarder by recreating the manager
-    // (Alternatively, keep a state flag. Keeping this simple for clarity.)
     final Activity activity = this.cordova.getActivity();
     billing = new BillingManager(activity, new BillingManager.Listener() {
       @Override public void onReady() {} // already ready
@@ -204,13 +202,11 @@ public class InAppBillingV3 extends CordovaPlugin {
             j.put("productId", pd.getProductId());
             j.put("title", pd.getTitle());
             j.put("description", pd.getDescription());
-            j.put("priceAsDecimal", JSONObject.NULL); // not provided by v7; keep null for compat
             j.put("price", one.getFormattedPrice());
             j.put("type", "inapp");
             j.put("currency", one.getPriceCurrencyCode());
             Long micros = one.getPriceAmountMicros(); // may be null on some devices
             if (micros != null) {
-              // convert micros (e.g., 990000) → "0.99"
               j.put("priceAsDecimal", String.valueOf(micros / 1_000_000.0));
             } else {
               j.put("priceAsDecimal", JSONObject.NULL);
@@ -279,7 +275,6 @@ public class InAppBillingV3 extends CordovaPlugin {
       JSONObject rec = new JSONObject(receipt);
       token = rec.optString("purchaseToken", null);
       orderId = rec.optString("orderId", null);
-      // In v7, owned product IDs live under "products" array if present
       if (rec.has("productId")) productId = rec.optString("productId");
     } catch (JSONException ignore) {}
     if (token == null) {
@@ -330,8 +325,7 @@ public class InAppBillingV3 extends CordovaPlugin {
           o.put("packageName", cordova.getActivity().getPackageName());
           o.put("productId", pid);
           o.put("purchaseTime", p.getPurchaseTime());
-          // keep same key name as legacy code; state not directly exposed, keep 0 for owned
-          o.put("purchaseState", PURCHASE_PURCHASED);
+          o.put("purchaseState", PURCHASE_PURCHASED); // legacy compatibility
           o.put("purchaseToken", p.getPurchaseToken());
           o.put("signature", p.getSignature()); // may be null in modern libs
           o.put("type", "inapp");
@@ -345,6 +339,58 @@ public class InAppBillingV3 extends CordovaPlugin {
       }
     });
     return true;
+  }
+
+  // === ADDed: purchase callback handler (consumables → consume then resolve) ===
+  private void handlePurchasesUpdated(List<Purchase> purchases, BillingResult r) {
+    // user canceled
+    if (r.getResponseCode() == BillingClient.BillingResponseCode.USER_CANCELED) {
+      if (pendingBuyCallback != null) { pendingBuyCallback.error("USER_CANCELED"); pendingBuyCallback = null; }
+      return;
+    }
+    // other errors
+    if (r.getResponseCode() != BillingClient.BillingResponseCode.OK || purchases == null) {
+      if (pendingBuyCallback != null) {
+        pendingBuyCallback.error(makeError("PURCHASE_FAILED", UNKNOWN_ERROR, null, r.getResponseCode()));
+        pendingBuyCallback = null;
+      }
+      return;
+    }
+
+    // success: CONSUME each consumable purchase, then resolve to JS
+    for (Purchase p : purchases) {
+      billing.consume(p.getPurchaseToken(), (br, outToken) -> {
+        if (br.getResponseCode() == BillingClient.BillingResponseCode.OK) {
+          try {
+            JSONObject res = new JSONObject();
+            String productId = p.getProducts().isEmpty() ? "" : p.getProducts().get(0);
+            res.put("productId", productId);
+            res.put("transactionId", p.getOrderId());
+            res.put("purchaseToken", p.getPurchaseToken());
+            res.put("receipt", p.getOriginalJson());     // compatibility with old JS
+            res.put("signature", p.getSignature());      // may be null
+            final CallbackContext cb = pendingBuyCallback;
+            pendingBuyCallback = null;
+            if (cb != null) {
+              cordova.getActivity().runOnUiThread(() -> cb.success(res));
+            }
+          } catch (JSONException e) {
+            final CallbackContext cb = pendingBuyCallback;
+            pendingBuyCallback = null;
+            if (cb != null) {
+              cordova.getActivity().runOnUiThread(() -> cb.error("PURCHASE_PARSE_ERROR"));
+            }
+          }
+        } else {
+          final CallbackContext cb = pendingBuyCallback;
+          pendingBuyCallback = null;
+          if (cb != null) {
+            cordova.getActivity().runOnUiThread(() ->
+              cb.error(makeError("CONSUME_FAILED", CONSUME_FAILED, null, br.getResponseCode())));
+          }
+        }
+      });
+    }
   }
 
   // v7 doesn’t require onActivityResult handling for purchases
