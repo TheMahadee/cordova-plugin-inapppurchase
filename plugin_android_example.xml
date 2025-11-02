@@ -1,0 +1,28 @@
+<platform name="android">
+  <js-module src="www/index-android.js" name="InAppBillingV3">
+    <merges target="inAppPurchase" />
+  </js-module>
+
+  <config-file target="AndroidManifest.xml" parent="/manifest">
+    <uses-permission android:name="com.android.vending.BILLING" />
+  </config-file>
+
+  <config-file target="res/xml/config.xml" parent="/*">
+    <feature name="InAppBillingV3">
+      <param name="android-package" value="com.alexdisler.inapppurchases.InAppBillingV3"/>
+    </feature>
+  </config-file>
+
+  <!-- NEW: Billing Client v7 -->
+  <framework src="com.android.billingclient:billing:7.0.0" />
+
+  <!-- Keep the Cordova bridge -->
+  <source-file src="src/android/InAppBillingV3.java" target-dir="src/com/alexdisler/inapppurchases" />
+  <!-- NEW helper you’ll add -->
+  <source-file src="src/android/BillingManager.java" target-dir="src/com/alexdisler/inapppurchases" />
+
+  <!-- DELETE these old entries from plugin.xml (and delete the files): -->
+  <!-- IInAppBillingService.aidl, IabHelper.java, IabResult.java, IabException.java,
+       Inventory.java, Purchase.java, Security.java, SkuDetails.java,
+       Base64.java, Base64DecoderException.java -->
+</platform>
